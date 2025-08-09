@@ -1,0 +1,519 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Echo Station — Jumpscare Edition</title>
+<style>
+  :root{--bg:#040405;--panel:rgba(255,255,255,0.02);--muted:rgba(255,255,255,0.6)}
+  html,body{height:100%;margin:0;background:var(--bg);color:#eee;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial;}
+  .wrap{max-width:880px;margin:3vh auto;padding:28px;background:var(--panel);border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,0.7);}
+  h1{margin:0 0 8px;font-weight:700;letter-spacing:0.6px}
+  #text{white-space:pre-wrap;line-height:1.6;font-size:1.05rem;min-height:230px}
+  .input-row{display:flex;gap:8px;margin-top:18px}
+  input[type="text"]{flex:1;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);background:rgba(255,255,255,0.02);color:inherit}
+  button{padding:10px 12px;border-radius:8px;border:0;background:#111;color:#fff;cursor:pointer}
+  .meta{margin-top:12px;opacity:0.75;font-size:0.9rem}
+  .choices{margin-top:12px;display:flex;flex-direction:column;gap:8px}
+  .choice-btn{background:transparent;border:1px solid rgba(255,255,255,0.06);padding:10px;border-radius:8px;text-align:left}
+  #inventory{margin-top:12px;opacity:0.9}
+  footer{margin-top:18px;opacity:0.6;font-size:0.85rem;text-align:center}
+  .small{font-size:0.9rem;opacity:0.85}
+  /* flash overlay for jumpscare */
+  #flashOverlay{position:fixed;inset:0;pointer-events:none;opacity:0;transition:opacity 0.05s linear;mix-blend-mode:screen;background:transparent}
+  #flashOverlay.red{background:linear-gradient(180deg, rgba(255,40,40,0.95), rgba(60,0,0,0.95))}
+  #scareImage{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%) scale(0.8);max-width:90vw;max-height:90vh;opacity:0;transition:opacity 0.08s linear;pointer-events:none}
+  .credits{margin-top:10px;font-size:0.85rem;opacity:0.7}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Echo Station — Jumpscare Edition</h1>
+  <div id="text">Loading...</div>
+
+  <div class="choices" id="choices"></div>
+
+  <div class="input-row" id="commandRow" style="display:none">
+    <input type="text" id="cmd" placeholder="Type an answer, command, or 'hint'..." autocomplete="off"/>
+    <button id="submitBtn">Enter</button>
+  </div>
+
+  <div id="inventory" class="small"></div>
+  <div class="meta" id="meta"></div>
+  <footer>Tip: type <b>save</b> or <b>load</b>. Test volume low — jumpscares are loud.</footer>
+  <div class="credits">Built for local play — save as <code>horror-jumpscare.html</code> and open in browser.</div>
+</div>
+
+<!-- Flash overlay & optional scary image -->
+<div id="flashOverlay"></div>
+<img id="scareImage" src="" alt="scare"/>
+
+<script>
+/* ====================================
+   Jumpscare utilities (audio + flash)
+   ==================================== */
+
+function playJumpscare(opts = {}) {
+  // opts: {duration, toneFreq, flashClass, showImage}
+  const dur = opts.duration || 400; // ms total
+  const freq = opts.toneFreq || 120; // base freq
+  const now = (new (window.AudioContext || window.webkitAudioContext))().currentTime;
+  const ac = new (window.AudioContext || window.webkitAudioContext)();
+  const o = ac.createOscillator();
+  const g = ac.createGain();
+  o.type = 'sawtooth';
+  o.frequency.value = freq;
+  g.gain.value = 0;
+  o.connect(g); g.connect(ac.destination);
+  o.start();
+  // quick amplitude burst
+  g.gain.linearRampToValueAtTime(0.25, now + 0.02); // peak
+  g.gain.exponentialRampToValueAtTime(0.0001, now + (dur/1000));
+  setTimeout(()=>{ try{ o.stop(); ac.close(); }catch(e){} }, dur+60);
+
+  // flash overlay
+  const overlay = document.getElementById('flashOverlay');
+  overlay.classList.add('red');
+  overlay.style.opacity = '1';
+  // show optional scary image if provided
+  if (opts.showImage) {
+    const img = document.getElementById('scareImage');
+    img.src = opts.showImage;
+    img.style.opacity = '1';
+    img.style.transform = 'translate(-50%,-50%) scale(1)';
+  }
+  // fade quickly
+  setTimeout(()=>{ overlay.style.opacity = '0'; if (opts.showImage) { const img = document.getElementById('scareImage'); img.style.opacity='0'; img.style.transform='translate(-50%,-50%) scale(0.8)'; } }, Math.max(80, dur-120));
+  // remove class after animation finishes
+  setTimeout(()=>{ overlay.classList.remove('red'); }, dur+150);
+}
+
+/* ====================================
+   Scenes (gory/jumpscare tone)
+   ==================================== */
+
+const scenes = {
+  start: {
+    text: `You wake onto iron. The platform light stutters above like a dying eyelid. A paper ticket, damp with something dark, lies by your hand. A word is scrawled on the board: "ECHO".`,
+    choices:[
+      {text:"look", goto:"look_start"},
+      {text:"take ticket", goto:"take_ticket"},
+      {text:"go platform", goto:"platform"}
+    ]
+  },
+  look_start: {
+    text: `Closer now: the board is smeared with reddish streaks. Someone has carved beneath the chalk — "SAY THE NAME FOR THE DOOR." A whisper breathes your name, wrong.`,
+    choices:[{text:"take ticket", goto:"take_ticket"},{text:"go platform", goto:"platform"}]
+  },
+  take_ticket: {
+    text:`You stuff the ticket in your pocket. It leaves a wet smudge on your finger. Stamped: ECHO / 03. Something drops loudly in the dark beyond the gate.`,
+    addItem:"ticket",
+    choices:[{text:"go platform", goto:"platform"}]
+  },
+  platform: {
+    text:`Platform 3 is empty. A locked gate and a plaque with a riddle:\n\n"I turn twice for every face,\nI keep no time but keep a place.\nBreak me if you must to see.\nWhat reflects but isn't me?"`,
+    riddleId:"mirrorRiddle"
+  },
+  platform_fail: {
+    text:`A crackle of amusement. "Close," the voice says, and something scrapes just behind you.`,
+    choices:[{text:"try again", goto:"platform"},{text:"use hint", goto:"hint_platform"}]
+  },
+  mirrorSuccess: {
+    text:`The gate grinds and opens. A torn poster flaps: "Caretaker's Office." Wet footprints lead inside.`,
+    choices:[{text:"enter office", goto:"office"},{text:"stay", goto:"platform"}]
+  },
+  hint_platform: {
+    text:`A wet whisper: "It answers with your face. Smash it if you must."`,
+    choices:[{text:"try again", goto:"platform"}]
+  },
+  office: {
+    text:`The office smells of the station's old iron and copper. On the desk: a ledger, a folded note, and a smear of dried red. The ledger lists names — Lena among them.`,
+    choices:[
+      {text:"read note", goto:"note"},
+      {text:"check ledger", goto:"ledger"},
+      {text:"leave", goto:"underpass"}
+    ]
+  },
+  note: {
+    text:`The note is terse: "Three stamps — first lies, last tells truth. Choose right and claim the key."`,
+    riddleId:"stampRiddle"
+  },
+  ledger: {
+    text:`Lena's scrawl: "I whispered my names to the clock. If you find them, listen." Someone scrawled: OAK / MIRROR / TIDE. A scrap slips free — you pocket it.`,
+    addItem:"lena_note",
+    choices:[{text:"leave", goto:"underpass"}]
+  },
+  underpass: {
+    text:`The underpass reeks. Rust flakes like dried skin. A chest waits, carved: OAK / MIRROR / TIDE.`,
+    riddleId:"threeWordRiddle"
+  },
+  chest_fail: {
+    text:`The carved words melt in the torchlight and then harden. A wet noise echoes — something moved inside the walls.`,
+    choices:[{text:"try again", goto:"underpass"},{text:"search", goto:"corridor"}]
+  },
+  chest_success: {
+    text:`The chest opens with a dull, hungry sigh. Inside: a stained brass key and a scrap that reads "CLOCK".`,
+    addItem:"tarnished_key",
+    choices:[{text:"take key", goto:"corridor"}]
+  },
+  corridor: {
+    text:`A corridor branches to three doors: a statue room where stone eyes glitter, a gallery of scratched portraits, and a stairwell upward that smells of old breath.`,
+    choices:[
+      {text:"statue room", goto:"statue_room"},
+      {text:"gallery", goto:"whisper_gallery"},
+      {text:"stairwell", goto:"stair_ladder"}
+    ]
+  },
+  statue_room: {
+    text:`Stone guardians hold a small carved box. One plaque reads: "Name what copies you to open."`,
+    riddleId:"statueRiddle"
+  },
+  whisper_gallery: {
+    text:`Portraits with peeled faces watch. Behind one — Lena — a hatch yawns. A rusted scrap: "Find me in the clock."`,
+    choices:[{text:"open hatch", goto:"hatch"},{text:"go back", goto:"corridor"}]
+  },
+  hatch: {
+    text:`The hatch is tight. You squeeze into an attic ladder labeled "CLOCK ACCESS." The air tastes metallic.`,
+    choices:[{text:"climb ladder", goto:"attic_ladder"},{text:"go down", goto:"corridor"}]
+  },
+  attic_ladder: {
+    text:`Clock parts hang from the rafters. A child's crank toy ticks without hands. On it: an envelope.`,
+    choices:[{text:"open envelope", goto:"attic_note"},{text:"descend", goto:"hatch"}]
+  },
+  attic_note: {
+    text:`Inside: LENA and ECHO, written in a child's hand. A scribble: "Say names at the tower."`,
+    addItem:"clock_names",
+    choices:[{text:"descend", goto:"hatch"}]
+  },
+  stair_ladder: {
+    text:`The stairwell leads up, the air growing thinner. An old sign points to "Clock Tower" and another to "Basement — Staff Only."`,
+    choices:[{text:"up to clock tower", goto:"clock_tower"},{text:"down to basement", goto:"basement_door"},{text:"back", goto:"corridor"}]
+  },
+  basement_door: {
+    text:`A heavy door, key-shaped hole the size of the brass key you found.`,
+    choices:[{text:"use key", goto:"basement_try"},{text:"go back", goto:"stair_ladder"}]
+  },
+  basement_try: {
+    text:`You press the tarnished key home...`,
+    // engine wraps around to open/locked logic
+  },
+  basement_open: {
+    text:`The door yawns open. Damp maps and a low passage like root channels. Ahead: a hedge-like subterranean maze.`,
+    choices:[{text:"enter maze", goto:"maze_entrance"},{text:"go up", goto:"stair_ladder"}]
+  },
+  maze_entrance: {
+    text:`Torches gutter. A fork: left where something scratches, right where a bell tolls slow and thick.`,
+    choices:[{text:"left", goto:"maze_left"},{text:"right", goto:"maze_right"},{text:"back", goto:"basement_open"}]
+  },
+  maze_left: {
+    text:`You follow scratching. A low stone slab bears a riddle: "I speak without a mouth... I come alive with wind."`,
+    riddleId:"echoRiddle"
+  },
+  maze_right: {
+    text:`The bell is nearer. An alcove holds a note: "The bell answers on named hours. Say the names."`,
+    choices:[{text:"say names", goto:"say_names"},{text:"back", goto:"maze_entrance"}]
+  },
+  say_names: {
+    text:`Who do you say? (type a name; if you have clock_names it will accept both LENA and ECHO)`,
+    riddleId:"nameRiddle"
+  },
+  tower_key_found: {
+    text:`A hidden latch clinks and a brass key stamped 'TOWER' rolls out.`,
+    addItem:"tower_key",
+    choices:[{text:"take key", goto:"maze_entrance"}]
+  },
+  echo_fail: {
+    text:`Your voice tinkles and is swallowed. Something slides in the dark.`,
+    choices:[{text:"try again", goto:"maze_entrance"},{text:"back", goto:"basement_open"}]
+  },
+  clock_tower: {
+    text:`Up a spiral, the clock face gapes without hands. A console with three slots hums. Shadows flick in the gears.`,
+    choices:[{text:"use console", goto:"console"},{text:"inspect gramophone", goto:"gramophone"},{text:"descend", goto:"stair_ladder"}]
+  },
+  console: {
+    text:`Three slots accept things: ticket, tower key, and names. Commands: 'insert ticket', 'insert key', 'insert name'.`,
+    choices:[{text:"insert ticket", goto:"insert_ticket"},{text:"insert key", goto:"insert_key"},{text:"insert name", goto:"insert_name"},{text:"back", goto:"clock_tower"}]
+  },
+  insert_ticket:{text:`You slide the ticket in; the console shivers.`,choices:[{text:"back", goto:"console"}]},
+  insert_key:{text:`The tower key finds its home; gears groan.`,choices:[{text:"back", goto:"console"}]},
+  insert_name:{text:`You whisper the names; the gramophone answers in a child's voice.`,choices:[{text:"back", goto:"console"}]},
+  gramophone: {
+    text:`A warped lullaby spills. The clock hands form, slow as a waking thing. The Caretaker's silhouette fills the face.`,
+    choices:[{text:"speak to caretaker", goto:"caretaker"},{text:"leave", goto:"stair_ladder"}]
+  },
+  caretaker: {
+    text:`He smiles; teeth like chipped plates. "Three choices: leave, remain, forget." He offers the assembled clock. Choose: escape, remain, or forget.`,
+    choices:[{text:"escape", goto:"ending_escape"},{text:"remain", goto:"ending_trapped"},{text:"forget", goto:"ending_ambiguous"}]
+  },
+  ending_escape: {
+    text:`You seize the clock and wrench the station open like a splintered door. Dawn hits your face — you flee with lungs burning. You escaped... for now.`,
+    choices:[{text:"restart", goto:"start", clear:true}]
+  },
+  ending_trapped: {
+    text:`You hand over the ticket. The Caretaker nods. The clock swallows you with a hungry click. Your voice now speaks from another plaque. You are not alone.`,
+    choices:[{text:"restart", goto:"start", clear:true}]
+  },
+  ending_ambiguous: {
+    text:`"Forget," you whisper. You wake later on the bench with a bruise around your neck and no ticket. The station hums, knowing.`,
+    choices:[{text:"restart", goto:"start", clear:true}]
+  },
+  not_found:{text:"You can't do that now.", choices:[{text:"back", goto:"start"}]}
+};
+
+/* ===============================
+   Riddle checking + jumpscare triggers
+   =============================== */
+
+function checkRiddle(id, answer, state) {
+  answer = (answer||"").trim().toLowerCase();
+  // helper to trigger a jumpscare on failure
+  function scareSmall(){ playJumpscare({duration:300, toneFreq:220}); }
+  function scareBig(){ playJumpscare({duration:520, toneFreq:90, showImage: ''}); }
+
+  if (id === "mirrorRiddle") {
+    const ok = new Set(["mirror","a mirror","glass","reflection","reflective mirror","the mirror"]);
+    if (ok.has(answer)) {
+      state.flags.platformSolved = true;
+      return {ok:true, goto:"mirrorSuccess", note:"You hear the lock give."};
+    } else {
+      // after 2 wrong tries, do a strong jumpscare
+      state.flags._mirrorWrong = (state.flags._mirrorWrong||0)+1;
+      if (state.flags._mirrorWrong >= 2) { scareSmall(); }
+      return {ok:false, goto:"platform_fail"};
+    }
+  }
+
+  if (id === "stampRiddle") {
+    const valid = new Set(["last","the last","third","the third","3","three"]);
+    if (valid.has(answer)) {
+      state.flags.stampSolved = true;
+      return {ok:true, goto:"ledger", note:"A tiny key skitters into the floorboard."};
+    } else {
+      // wrong answer triggers a whisper then a louder noise
+      state.flags._stampWrong = (state.flags._stampWrong||0)+1;
+      if (state.flags._stampWrong === 1) { playJumpscare({duration:220, toneFreq:300}); }
+      if (state.flags._stampWrong >= 3) { playJumpscare({duration:520, toneFreq:70}); }
+      return {ok:false, goto:"platform_fail"};
+    }
+  }
+
+  if (id === "threeWordRiddle") {
+    const hasLena = state.inventory.includes('lena_note');
+    if (answer === "mirror") {
+      if (hasLena) {
+        state.flags.chestOpened = true;
+        return {ok:true, goto:"chest_success", note:"The chest yawns like a mouth."};
+      } else {
+        // big scare for wrong context
+        playJumpscare({duration:480, toneFreq:120});
+        return {ok:false, goto:"chest_fail", note:"It feels like something watched you fail."};
+      }
+    }
+    state.flags._threeWrong = (state.flags._threeWrong||0)+1;
+    if (state.flags._threeWrong >= 2) playJumpscare({duration:320, toneFreq:260});
+    return {ok:false, goto:"chest_fail"};
+  }
+
+  if (id === "statueRiddle") {
+    const okSet = new Set(["mirror","reflection","echo","shadow"]);
+    if (okSet.has(answer)) {
+      state.flags.statueSolved = true;
+      return {ok:true, goto:"corridor", note:"The statue clicks and releases the box."};
+    } else {
+      // statue moves closer sound (jumpscare)
+      playJumpscare({duration:260, toneFreq:300});
+      return {ok:false, goto:"statue_room"};
+    }
+  }
+
+  if (id === "echoRiddle") {
+    const okSet = new Set(["echo","an echo","sound"]);
+    if (okSet.has(answer)) {
+      state.flags.echoSolved = true;
+      return {ok:true, goto:"tower_key_found", note:"Your voice returns like a child's laugh."};
+    } else {
+      state.flags._echoWrong = (state.flags._echoWrong||0)+1;
+      if (state.flags._echoWrong >= 1) playJumpscare({duration:300, toneFreq:180});
+      return {ok:false, goto:"echo_fail"};
+    }
+  }
+
+  if (id === "nameRiddle") {
+    const names = answer.split(/[\s,]+/).filter(Boolean).map(s=>s.toLowerCase());
+    const hasClockNames = state.inventory.includes('clock_names');
+    const hasBoth = names.includes('lena') && names.includes('echo');
+    if (hasClockNames && hasBoth) {
+      state.flags.namesSpoken = true;
+      return {ok:true, goto:"tower_key_found", note:"Something unlatches deep in the tower."};
+    }
+    if (names.includes('echo') && state.flags.echoSolved) {
+      state.flags.namesSpoken = true;
+      return {ok:true, goto:"tower_key_found", note:"Echo replies — an answer is accepted."};
+    }
+    // wrong -> sudden loud bell (scare)
+    playJumpscare({duration:420, toneFreq:60});
+    return {ok:false, goto:"maze_entrance", note:"Silence swallows your attempt."};
+  }
+
+  return {ok:false, goto:"not_found"};
+}
+
+/* ===============================
+   Engine (save/load, UI)
+   =============================== */
+
+const textEl = document.getElementById('text');
+const choicesEl = document.getElementById('choices');
+const cmdRow = document.getElementById('commandRow');
+const cmdInput = document.getElementById('cmd');
+const submitBtn = document.getElementById('submitBtn');
+const invEl = document.getElementById('inventory');
+const metaEl = document.getElementById('meta');
+
+let state = { scene:'start', inventory:[], flags:{} };
+
+function saveState(){ localStorage.setItem('echo_scare_save', JSON.stringify(state)); metaEl.textContent = "Saved."; setTimeout(()=>metaEl.textContent='',1200); }
+function loadState(){ const s = localStorage.getItem('echo_scare_save'); if(!s){ metaEl.textContent="No save."; setTimeout(()=>metaEl.textContent='',1200); return;} state = JSON.parse(s); render(); metaEl.textContent="Loaded."; setTimeout(()=>metaEl.textContent='',1200); }
+
+function hasItem(i){ return state.inventory.includes(i); }
+function addItem(i){ if(!hasItem(i)) state.inventory.push(i); }
+
+function render(){
+  const s = scenes[state.scene];
+  if(!s){ textEl.textContent = "Scene missing."; return; }
+  textEl.textContent = s.text || "";
+  invEl.textContent = state.inventory.length ? "Inventory: " + state.inventory.join(', ') : "Inventory: —";
+
+  // special-case for basement_try
+  if(state.scene === 'basement_try'){
+    if(hasItem('tarnished_key')){ state.scene = 'basement_open'; render(); return; }
+    else {
+      textEl.textContent += `\n\nThe keyhole glares back. You don't have the right key.`;
+      choicesEl.innerHTML = '';
+      choicesEl.appendChild(makeChoiceBtn("go back", ()=>{ state.scene='stair_ladder'; render(); }));
+      cmdRow.style.display='none';
+      return;
+    }
+  }
+
+  choicesEl.innerHTML = '';
+  if(s.choices){
+    cmdRow.style.display='none';
+    s.choices.forEach(c => {
+      const btn = document.createElement('button');
+      btn.className='choice-btn';
+      btn.textContent = c.text;
+      btn.onclick = ()=>{
+        if(c.clear){ state = {scene:'start', inventory:[], flags:{}}; saveState(); render(); return; }
+        if(c.addItem) addItem(c.addItem);
+        if(c.goto) {
+          state.scene = c.goto;
+          // if destination defines addItem, add it
+          const dest = scenes[c.goto];
+          if(dest && dest.addItem) addItem(dest.addItem);
+        }
+        render();
+      };
+      choicesEl.appendChild(btn);
+    });
+  } else if (s.riddleId) {
+    cmdRow.style.display='flex';
+    choicesEl.innerHTML = '<div style="opacity:0.9">Type your answer (or "hint").</div>';
+  } else {
+    cmdRow.style.display='none';
+  }
+
+  if(s.addItem) addItem(s.addItem);
+}
+
+function makeChoiceBtn(txt, fn){ const b = document.createElement('button'); b.className='choice-btn'; b.textContent=txt; b.onclick=fn; return b; }
+
+submitBtn.addEventListener('click', handleCommand);
+cmdInput.addEventListener('keydown', e=>{ if(e.key==='Enter') handleCommand(); });
+
+function handleCommand(){
+  const raw = cmdInput.value.trim();
+  if(!raw) return;
+  const lc = raw.toLowerCase();
+  if(lc === 'save'){ saveState(); cmdInput.value=''; return; }
+  if(lc === 'load'){ loadState(); cmdInput.value=''; return; }
+
+  const cur = scenes[state.scene];
+
+  if(lc === 'hint'){
+    if(cur && cur.riddleId){
+      state.flags['hint_'+cur.riddleId] = (state.flags['hint_'+cur.riddleId]||0)+1;
+      let hint = "(HINT): ";
+      switch(cur.riddleId){
+        case 'mirrorRiddle': hint += "It shows you back."; break;
+        case 'stampRiddle': hint += "Which stamp would tell the truth?"; break;
+        case 'threeWordRiddle': hint += "Check the ledger's words."; break;
+        case 'statueRiddle': hint += "It mimics your face."; break;
+        case 'echoRiddle': hint += "Say something that comes back."; break;
+        case 'nameRiddle': hint += "Try the two names you found."; break;
+        default: hint += "Listen closely."; break;
+      }
+      textEl.textContent += `\n\n${hint}`;
+      cmdInput.value=''; return;
+    } else {
+      textEl.textContent += `\n\nThere is nothing to hint at here.`;
+      cmdInput.value=''; return;
+    }
+  }
+
+  // match typed exact choice if present
+  if(cur.choices){
+    const match = cur.choices.find(c => c.text.toLowerCase() === lc);
+    if(match){
+      if(match.clear){ state = {scene:'start', inventory:[], flags:{}}; saveState(); render(); cmdInput.value=''; return; }
+      if(match.addItem) addItem(match.addItem);
+      state.scene = match.goto || state.scene;
+      if(scenes[state.scene] && scenes[state.scene].addItem) addItem(scenes[state.scene].addItem);
+      render();
+      cmdInput.value=''; return;
+    }
+  }
+
+  // riddle submission
+  if(cur && cur.riddleId){
+    const res = checkRiddle(cur.riddleId, raw, state);
+    if(res.note) textEl.textContent += `\n\n${res.note}`;
+    if(res.ok){
+      state.scene = res.goto || state.scene;
+      render();
+    } else {
+      state.scene = res.goto || state.scene;
+      render();
+    }
+    cmdInput.value=''; return;
+  }
+
+  // typed 'use key' fallback
+  if(lc.startsWith('use ')){
+    if(lc.includes('key') && hasItem('tarnished_key') && state.scene === 'basement_door'){
+      state.scene = 'basement_open';
+      render(); cmdInput.value=''; return;
+    }
+  }
+
+  // basic insert actions for console area
+  if(state.scene === 'console' || state.scene === 'clock_tower'){
+    if(lc.includes('insert') || lc.includes('use')){
+      if(lc.includes('ticket') && hasItem('ticket')){ textEl.textContent += `\n\nYou insert the ticket; the console hums.`; state.flags.insertedTicket = true; cmdInput.value=''; return; }
+      if(lc.includes('tower') && hasItem('tower_key')){ textEl.textContent += `\n\nYou slot the tower key; mechanisms groan.`; state.flags.insertedTowerKey = true; cmdInput.value=''; return; }
+      if(lc.includes('name') && hasItem('clock_names')){ textEl.textContent += `\n\nYou whisper names; the tower listens.`; state.flags.insertedNames = true; cmdInput.value=''; return; }
+    }
+  }
+
+  textEl.textContent += `\n\n> ${raw}\nSilence answers you back.`;
+  cmdInput.value='';
+}
+
+window.addEventListener('load', ()=>{
+  const s = localStorage.getItem('echo_scare_save');
+  if(s){ textEl.textContent = "Saved game detected. Type 'load' to restore or choose a fresh action to start."; state.scene='start'; render(); }
+  else render();
+});
+</script>
+</body>
+</html>
